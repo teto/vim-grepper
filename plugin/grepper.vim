@@ -115,12 +115,17 @@ function! s:on_stdout_nvim(_job_id, data, _event) dict abort
   try
     if empty(a:data[-1])
       " Second-last item is the last complete line in a:data.
-      noautocmd execute self.addexpr 'self.stdoutbuf + a:data[:-2]'
+      let lines = self.stdoutbuf + a:data[:-2]
+      echomsg 'DEBUG: '. string(lines)
+      call s:remove_ansi(self, lines)
+      noautocmd execute self.addexpr 'lines'
       let self.stdoutbuf = []
     else
       if empty(self.stdoutbuf)
         " Last item in a:data is an incomplete line. Put into buffer.
         let self.stdoutbuf = [remove(a:data, -1)]
+        echomsg 'DEBUG: '. string(a:data)
+        call s:remove_ansi(self, a:data)
         noautocmd execute self.addexpr 'a:data'
       else
         " Last item in a:data is an incomplete line. Append to buffer.
@@ -135,6 +140,9 @@ function! s:on_stdout_nvim(_job_id, data, _event) dict abort
         " Add the remaining data
         let n_rem_lines = self.flags.stop - nmatches - 1
         if n_rem_lines > 0
+          echomsg 'DEBUG: '. string(self.stdoutbuf[:n_rem_lines])
+          let lines = self.stdoutbuf[:n_rem_lines]
+          call s:remove_ansi(self, lines)
           noautocmd execute self.addexpr 'self.stdoutbuf[:n_rem_lines]'
         endif
 
@@ -156,7 +164,9 @@ function! s:on_stdout_vim(_job_id, data) dict abort
   let orig_dir = s:chdir_push(self.cmd_dir)
 
   try
-    noautocmd execute self.addexpr 'a:data'
+    echomsg 'DEBUG: '. a:data
+    let data = s:remove_ansi(self, a:data)
+    noautocmd execute self.addexpr 'data'
     if self.flags.stop > 0
           \ && len(self.flags.quickfix ? getqflist() : getloclist(0)) >= self.flags.stop
       call job_stop(s:id)
@@ -407,6 +417,23 @@ function! s:get_config() abort
   endif
   return flags
 endfunction
+
+" s:remove_ansi() {{{2
+function! s:remove_ansi(self, arg) abort
+  if type(a:arg) == type([])  " nvim
+    if empty(a:self.query)
+      let a:self.query = matchstr(a:arg[0], '.*[[:escape:]][[1-9]\{2}[0-9;]\+m\zs.\{-}\ze[[:escape:]]')
+      echomsg 'QUERY: '. string(a:self.query)
+    endif
+    return map(a:arg, "substitute(v:val, '[[:escape:]][[0-9;]*[mK]', '', 'g')")
+  else  " vim; type(a:arg) == type('')
+    if empty(a:self.query)
+      let a:self.query = matchstr(a:arg, '.*[[:escape:]][[1-9]\{2}[0-9;]\+m\zs.\{-}\ze[[:escape:]]')
+      echomsg 'QUERY: '. string(a:self.query)
+    endif
+    return substitute(a:arg, '[[:escape:]][[0-9;]*[mK]', '', 'g')
+  endif
+endfunction
 " }}}1
 
 " s:parse_flags() {{{1
@@ -540,10 +567,6 @@ function! s:process_flags(flags)
     let a:flags.open      = 0
   endif
 
-  if a:flags.highlight
-    call s:highlight_query(a:flags)
-  endif
-
   call histadd('input', a:flags.query)
 
   return 0
@@ -672,6 +695,7 @@ function! s:run(flags)
         \ 'window':    winnr(),
         \ 'tabpage':   tabpagenr(),
         \ 'stdoutbuf': [],
+        \ 'query':     '',
         \ }
 
   call s:store_errorformat(a:flags)
@@ -762,6 +786,10 @@ function! s:finish_up(flags)
   redraw
   echo printf('Found %d matches.', size)
 
+  if a:flags.highlight
+    call s:highlight_query(a:flags)
+  endif
+
   if a:flags.side
     call s:side(a:flags.quickfix)
   endif
@@ -776,38 +804,42 @@ endfunction
 " -highlight {{{1
 " s:highlight_query() {{{2
 function! s:highlight_query(flags)
-  let query = has_key(a:flags, 'query_orig') ? a:flags.query_orig : a:flags.query
-
-  " Change Vim's '\'' to ' so it can be understood by /.
-  let vim_query = substitute(query, "'\\\\''", "'", 'g')
-
-  " Remove surrounding quotes that denote a string.
-  let start = vim_query[0]
-  let end = vim_query[-1:-1]
-  if start == end && start =~ "\['\"]"
-    let vim_query = vim_query[1:-2]
-  endif
-
-  if a:flags.query_escaped
-    let vim_query = s:unescape_query(a:flags, vim_query)
-    let vim_query = escape(vim_query, '\')
-    if a:flags.cword
-      if a:flags.query_orig =~# '^\k'
-        let vim_query = '\<' . vim_query
-      endif
-      if a:flags.query_orig =~# '\k$'
-        let vim_query = vim_query . '\>'
-      endif
-    endif
-    let vim_query = '\V'. vim_query
+  if !empty(a:flags.query)
+    let vim_query = '\V'. a:flags.query
   else
-    " \bfoo\b -> \<foo\> Assume only one pair.
-    let vim_query = substitute(vim_query, '\v\\b(.{-})\\b', '\\<\1\\>', '')
-    " *? -> \{-}
-    let vim_query = substitute(vim_query, '*\\\=?', '\\{-}', 'g')
-    " +? -> \{-1,}
-    let vim_query = substitute(vim_query, '\\\=+\\\=?', '\\{-1,}', 'g')
-    let vim_query = escape(vim_query, '+')
+    let query = has_key(a:flags, 'query_orig') ? a:flags.query_orig : a:flags.query
+
+    " Change Vim's '\'' to ' so it can be understood by /.
+    let vim_query = substitute(query, "'\\\\''", "'", 'g')
+
+    " Remove surrounding quotes that denote a string.
+    let start = vim_query[0]
+    let end = vim_query[-1:-1]
+    if start == end && start =~ "\['\"]"
+      let vim_query = vim_query[1:-2]
+    endif
+
+    if a:flags.query_escaped
+      let vim_query = s:unescape_query(a:flags, vim_query)
+      let vim_query = escape(vim_query, '\')
+      if a:flags.cword
+        if a:flags.query_orig =~# '^\k'
+          let vim_query = '\<' . vim_query
+        endif
+        if a:flags.query_orig =~# '\k$'
+          let vim_query = vim_query . '\>'
+        endif
+      endif
+      let vim_query = '\V'. vim_query
+    else
+      " \bfoo\b -> \<foo\> Assume only one pair.
+      let vim_query = substitute(vim_query, '\v\\b(.{-})\\b', '\\<\1\\>', '')
+      " *? -> \{-}
+      let vim_query = substitute(vim_query, '*\\\=?', '\\{-}', 'g')
+      " +? -> \{-1,}
+      let vim_query = substitute(vim_query, '\\\=+\\\=?', '\\{-1,}', 'g')
+      let vim_query = escape(vim_query, '+')
+    endif
   endif
 
   let @/ = vim_query
