@@ -1022,4 +1022,10 @@ for tool in g:grepper.tools
         \ 'Grepper -noprompt -tool' tool '-query <args>'
 endfor
 
+" Menus {{{1
+menu Grepper.Search\ in\ current\ Buffer :Grepper -switch
+menu Grepper.Search\ across\ Buffers :Grepper -switch -buffers
+menu Grepper.Search\ across\ directory :Grepper 
+menu Grepper.Autoopen\ results :let g:grepper.open=1<CR>
+
 " vim: tw=80 et sts=2 sw=2 fdm=marker
